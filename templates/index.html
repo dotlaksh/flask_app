@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <title>Stock Screener</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='style.css') }}"
+    >
+
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+
+</head>
+
+<body>
+
+    <div class="container">
+
+        <div class="header">
+            <div class="header-content">
+                <h1>Stock Screener</h1>
+            </div>
+            <div class="buttons">
+
+            <a href="/scan/powerplay">
+                <button class="{{ 'active' if active == 'powerplay' else '' }}" data-setup="powerplay">
+                    PowerPlay
+                </button>
+            </a>
+
+            <a href="/scan/darvas">
+                <button class="{{ 'active' if active == 'darvas' else '' }}" data-setup="darvas">
+                    Darvas
+                </button>
+            </a>
+
+            <a href="/scan/vcp">
+                <button class="{{ 'active' if active == 'vcp' else '' }}" data-setup="vcp">
+                    VCP
+                </button>
+            </a>
+
+            <a href="/scan/nr7">
+                <button class="{{ 'active' if active == 'nr7' else '' }}" data-setup="nr7">
+                    NR7
+                </button>
+            </a>
+
+            <a href="/scan/52wh">
+                <button class="{{ 'active' if active == '52wh' else '' }}" data-setup="52wh">
+                    52W High
+                </button>
+            </a>
+
+            </div>
+        </div>
+
+        {% if error %}
+
+        <div class="error-message">
+            {{ error }}
+        </div>
+
+        {% endif %}
+
+        <div id="loading" class="loading hidden">
+            <div class="spinner"></div>
+            <p>Scanning...</p>
+        </div>
+
+        <div class="two-column-layout">
+
+            <div class="left-column">
+
+                {% if results %}
+
+                <div class="results-table-container">
+                    <div class="results-table-wrapper">
+                        <table class="results-table">
+
+                        <thead id="results-header">
+
+                        </thead>
+
+                        <tbody id="results-body">
+
+                        </tbody>
+
+                        </table>
+                    </div>
+                    <div class="pagination">
+                        <div class="pagination-info">
+                            Showing <span id="page-info">1-15</span> of <span id="total-results">{{ results|length }}</span> results
+                        </div>
+                        <div class="pagination-buttons">
+                            <button class="pagination-btn" id="prev-btn" onclick="changePage(-1)">Previous</button>
+                            <button class="pagination-btn active" id="current-page">1</button>
+                            <button class="pagination-btn" id="next-btn" onclick="changePage(1)">Next</button>
+                        </div>
+                    </div>
+                </div>
+
+                {% elif not error %}
+
+                <p class="no-results">Select a scanner to begin</p>
+
+                {% endif %}
+
+            </div>
+
+            <div class="right-column">
+
+                <div id="chart-container" class="chart-container">
+                    <div class="chart-wrapper">
+                        <div id="chart" class="chart"></div>
+                        <div id="chart-placeholder" class="chart-placeholder">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
+                            </svg>
+                            <p>Click on a row to view chart</p>
+                        </div>
+                    </div>
+                    <div class="pagination" id="chart-pagination" style="display: none;">
+                        <div class="pagination-info">
+                            <span id="chart-symbol"></span>
+                        </div>
+                        <div class="pagination-buttons">
+                            <button class="pagination-btn" onclick="navigateChart(-1)">Previous</button>
+                            <button class="pagination-btn" onclick="navigateChart(1)">Next</button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+    <script>
+        let chart = null;
+        let candlestickSeries = null;
+        let allResults = [];
+        let currentPage = 1;
+        const resultsPerPage = 15;
+        let currentSymbolIndex = 0;
+        let currentSymbols = [];
+
+        // Store all results from server
+        {% if results %}
+        allResults = {{ results | tojson }};
+        currentSymbols = allResults.map(r => r.symbol);
+        {% endif %}
+
+        function changePage(direction) {
+            const totalPages = Math.ceil(allResults.length / resultsPerPage);
+            currentPage += direction;
+            
+            if (currentPage < 1) currentPage = 1;
+            if (currentPage > totalPages) currentPage = totalPages;
+            
+            renderTable();
+        }
+
+        function renderTable() {
+            const startIndex = (currentPage - 1) * resultsPerPage;
+            const endIndex = startIndex + resultsPerPage;
+            const pageResults = allResults.slice(startIndex, endIndex);
+            
+            const tbody = document.getElementById('results-body');
+            const thead = document.getElementById('results-header');
+            tbody.innerHTML = '';
+            thead.innerHTML = '';
+            
+            // Define column mapping: display name -> possible data keys
+            const columnMapping = {
+                'Symbol': ['symbol'],
+                'CMP': ['close', 'current_price'],
+                'Range %': ['range_pct', 'box_range_pct', 'range_5_pct', 'base_range_pct', 'away_from_high_pct']
+            };
+            
+            // Get available columns from first result
+            if (allResults.length > 0) {
+                const availableKeys = Object.keys(allResults[0]);
+                
+                // Determine which columns to show based on availability
+                const displayColumns = [];
+                const dataKeys = [];
+                
+                for (const [displayName, possibleKeys] of Object.entries(columnMapping)) {
+                    for (const key of possibleKeys) {
+                        if (availableKeys.includes(key)) {
+                            displayColumns.push(displayName);
+                            dataKeys.push(key);
+                            break;
+                        }
+                    }
+                }
+                
+                // Render header
+                const headerRow = document.createElement('tr');
+                displayColumns.forEach(colName => {
+                    const th = document.createElement('th');
+                    th.textContent = colName;
+                    headerRow.appendChild(th);
+                });
+                thead.appendChild(headerRow);
+                
+                // Render body
+                pageResults.forEach(row => {
+                    const tr = document.createElement('tr');
+                    tr.className = 'result-row';
+                    tr.setAttribute('data-symbol', row.symbol || '');
+                    
+                    // Use the mapped data keys in order
+                    dataKeys.forEach(key => {
+                        const td = document.createElement('td');
+                        let value = row[key];
+                        // Format numbers to 2 decimal places
+                        if (typeof value === 'number') {
+                            value = value.toFixed(2);
+                        }
+                        td.textContent = value;
+                        tr.appendChild(td);
+                    });
+                    
+                    tr.addEventListener('click', function() {
+                        const symbol = this.getAttribute('data-symbol');
+                        currentSymbolIndex = currentSymbols.indexOf(symbol);
+                        loadChart(symbol);
+                    });
+                    
+                    tbody.appendChild(tr);
+                });
+            }
+            
+            // Update pagination info
+            const pageInfo = document.getElementById('page-info');
+            const totalResults = document.getElementById('total-results');
+            const currentPageBtn = document.getElementById('current-page');
+            const prevBtn = document.getElementById('prev-btn');
+            const nextBtn = document.getElementById('next-btn');
+            const totalPages = Math.ceil(allResults.length / resultsPerPage);
+            
+            pageInfo.textContent = `${startIndex + 1}-${Math.min(endIndex, allResults.length)}`;
+            totalResults.textContent = allResults.length;
+            currentPageBtn.textContent = currentPage;
+            
+            prevBtn.disabled = currentPage === 1;
+            nextBtn.disabled = currentPage === totalPages;
+            
+            // Auto-load chart for first symbol on current page
+            if (pageResults.length > 0 && pageResults[0].symbol) {
+                currentSymbolIndex = currentSymbols.indexOf(pageResults[0].symbol);
+                loadChart(pageResults[0].symbol);
+            }
+        }
+
+        function navigateChart(direction) {
+            currentSymbolIndex += direction;
+            
+            if (currentSymbolIndex < 0) currentSymbolIndex = 0;
+            if (currentSymbolIndex >= currentSymbols.length) currentSymbolIndex = currentSymbols.length - 1;
+            
+            loadChart(currentSymbols[currentSymbolIndex]);
+        }
+
+        function loadChart(symbol) {
+            if (!symbol) {
+                console.error('No symbol provided');
+                return;
+            }
+
+            console.log('Loading chart for symbol:', symbol);
+
+            // Check if LightweightCharts is loaded
+            if (typeof LightweightCharts === 'undefined') {
+                console.error('LightweightCharts library not loaded');
+                document.getElementById('chart').style.display = 'none';
+                document.getElementById('chart-placeholder').style.display = 'block';
+                document.getElementById('chart-placeholder').innerHTML = '<p>Chart library not loaded. Please refresh the page.</p>';
+                return;
+            }
+
+            // Show loading state
+            document.getElementById('chart-placeholder').style.display = 'none';
+            document.getElementById('chart').style.display = 'block';
+            document.getElementById('chart-pagination').style.display = 'flex';
+            document.getElementById('chart-symbol').textContent = symbol;
+
+            fetch(`/api/stock/${symbol}`)
+                .then(response => {
+                    console.log('Response status:', response.status);
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('API response:', data);
+                    
+                    if (data.success && data.data && data.data.length > 0) {
+                        try {
+                            // Remove existing chart if any
+                            if (chart) {
+                                chart.remove();
+                            }
+
+                            // Create new chart with volume pane - use full container height
+                            const chartContainer = document.getElementById('chart');
+                            const chartWrapper = document.querySelector('.chart-wrapper');
+                            chart = LightweightCharts.createChart(chartContainer, {
+                                width: chartContainer.clientWidth,
+                                height: chartWrapper.clientHeight,
+                                layout: {
+                                    background: { color: '#111827' },
+                                    textColor: '#d1d5db',
+                                },
+                                grid: {
+                                    vertLines: { color: '#1f2937' },
+                                    horzLines: { color: '#1f2937' },
+                                },
+                                crosshair: {
+                                    mode: LightweightCharts.CrosshairMode.Normal,
+                                },
+                                rightPriceScale: {
+                                    borderColor: '#374151',
+                                },
+                                timeScale: {
+                                    borderColor: '#374151',
+                                    timeVisible: true,
+                                },
+                            });
+
+                            // Add candlestick series using addSeries API
+                            candlestickSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
+                                upColor: '#10b981',
+                                downColor: '#ef4444',
+                                borderDownColor: '#ef4444',
+                                borderUpColor: '#10b981',
+                                wickDownColor: '#ef4444',
+                                wickUpColor: '#10b981',
+                            });
+
+                            // Add volume histogram series using addSeries API
+                            const volumeSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
+                                upColor: '#10b981',
+                                downColor: '#ef4444',
+                                priceFormat: {
+                                    type: 'volume',
+                                },
+                                priceScaleId: '', // use overlay
+                                scaleMargins: {
+                                    top: 0.8,
+                                    bottom: 0,
+                                },
+                            });
+
+                            // Convert data format for TradingView
+                            const chartData = data.data.map(item => ({
+                                time: item.time,
+                                open: item.open,
+                                high: item.high,
+                                low: item.low,
+                                close: item.close,
+                            }));
+
+                            // Prepare volume data with colors
+                            const volumeData = data.data.map(item => {
+                                const isUp = item.close >= item.open;
+                                return {
+                                    time: item.time,
+                                    value: item.volume,
+                                    color: isUp ? '#10b981' : '#ef4444',
+                                };
+                            });
+
+                            console.log('Chart data:', chartData);
+                            console.log('Volume data:', volumeData);
+
+                            candlestickSeries.setData(chartData);
+                            volumeSeries.setData(volumeData);
+                            chart.timeScale().fitContent();
+                        } catch (chartError) {
+                            console.error('Error creating chart:', chartError);
+                            document.getElementById('chart').style.display = 'none';
+                            document.getElementById('chart-placeholder').style.display = 'block';
+                            document.getElementById('chart-placeholder').innerHTML = `<p>Error creating chart: ${chartError.message}</p>`;
+                        }
+                    } else {
+                        console.error('No data or error in response:', data);
+                        document.getElementById('chart').style.display = 'none';
+                        document.getElementById('chart-placeholder').style.display = 'block';
+                        document.getElementById('chart-placeholder').innerHTML = `<p>${data.error || 'No data available for this symbol'}</p>`;
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading chart:', error);
+                    document.getElementById('chart').style.display = 'none';
+                    document.getElementById('chart-placeholder').style.display = 'block';
+                    document.getElementById('chart-placeholder').innerHTML = `<p>Error loading chart: ${error.message}</p>`;
+                });
+        }
+
+        // Add click event listeners to rows
+        document.addEventListener('DOMContentLoaded', function() {
+            if (allResults.length > 0) {
+                renderTable();
+            }
+            
+            console.log('LightweightCharts loaded:', typeof LightweightCharts !== 'undefined');
+
+            // Handle window resize
+            window.addEventListener('resize', function() {
+                if (chart) {
+                    const chartContainer = document.getElementById('chart');
+                    const chartWrapper = document.querySelector('.chart-wrapper');
+                    chart.applyOptions({
+                        width: chartContainer.clientWidth,
+                        height: chartWrapper.clientHeight
+                    });
+                }
+            });
+        });
+    </script>
+
+</body>
+
+</html>
